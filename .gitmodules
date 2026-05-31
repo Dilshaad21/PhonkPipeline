@@ -1,0 +1,9 @@
+[submodule "BeatSync-Engine"]
+	path = BeatSync-Engine
+	url = https://github.com/Merserk/BeatSync-Engine.git
+[submodule "auto-gaming-montage-maker"]
+	path = auto-gaming-montage-maker
+	url = https://github.com/Noah-Grimaldi/auto-gaming-montage-maker.git
+[submodule "crispy"]
+	path = crispy
+	url = https://github.com/Flowtter/crispy.git
