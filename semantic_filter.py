@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
@@ -48,6 +49,9 @@ class SemanticConfig:
     batch_size: int = 8          # frames per forward pass
     torch_dtype: str = "auto"    # auto | float32 | float16 | bfloat16
     attn_implementation: str = "sdpa"
+    # None -> auto: offline for a local checkpoint dir, allow Hub download for a
+    # repo id like "Qwen/Qwen2-VL-2B-Instruct". Set True/False to force it.
+    local_files_only: Optional[bool] = None
 
 
 @dataclass
@@ -170,8 +174,17 @@ class _QwenClient:
 
         self.torch = torch
         self.cfg = cfg
+
+        # A local directory checkpoint is loaded offline; a bare Hub repo id is
+        # allowed to download (and complete a partial cache, which is what the
+        # missing-vocab_file tokenizer crash comes from). An explicit config
+        # value overrides the auto-detection.
+        local_only = cfg.local_files_only
+        if local_only is None:
+            local_only = os.path.isdir(model_path)
+
         self.processor = AutoProcessor.from_pretrained(
-            model_path, trust_remote_code=True, local_files_only=True
+            model_path, trust_remote_code=True, local_files_only=local_only
         )
 
         if torch.cuda.is_available():
@@ -184,7 +197,7 @@ class _QwenClient:
         dtype = self._resolve_dtype()
         model_kwargs: Dict[str, Any] = {
             "trust_remote_code": True,
-            "local_files_only": True,
+            "local_files_only": local_only,
             "low_cpu_mem_usage": True,
             "dtype": dtype,
         }

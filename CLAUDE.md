@@ -38,4 +38,43 @@ When asked to "harvest"/"extract"/"distill" a capability, the expected pattern i
 python pack_repos.py        # -> beatsync_source.txt, montage_fx_source.txt
 ```
 
-There is no root-level test/build/lint setup or `requirements.txt`. Runtime deps are per-module and heavy: `librosa` (audio_analyzer), `moviepy` + `opencv-python` + a system `ffmpeg` on PATH (phonk_fx), `torch` + `transformers` + a local Qwen3-VL checkpoint under `bin/models/` (semantic_filter). These are not installed in the working environment by default — syntax-check edits, but expect imports to fail without the deps.
+There is no root-level test/build/lint setup or `requirements.txt`. Runtime deps are per-module and heavy: `librosa` (audio_analyzer), `moviepy` + `opencv-python` + a system `ffmpeg` on PATH (phonk_fx), `torch` + `transformers` + a Qwen-VL model (semantic_filter). These are not installed in the working environment by default — syntax-check edits, but expect imports to fail without the deps.
+
+## Windows setup
+
+Developed on macOS, deployed on Windows. The code is cross-platform — all path handling goes through `os.path`/`pathlib`, and render temp files are explicitly closed before their containing dir is removed so Windows can delete them (an open file can't be unlinked on Windows). The environment, however, must be provisioned per-OS. There is no `requirements.txt`; install the per-module deps directly.
+
+1. **Python + virtual environment** (Python 3.9+; on Windows the launcher is `python`, not `python3`):
+   ```bat
+   python -m venv phonk_env
+   phonk_env\Scripts\activate
+   python -m pip install --upgrade pip
+   ```
+   (In PowerShell the activate script is `phonk_env\Scripts\Activate.ps1`; if it's blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.)
+
+2. **Python dependencies:**
+   ```bat
+   pip install librosa "moviepy>=2.0" opencv-python numpy Pillow transformers
+   :: CPU-only PyTorch:
+   pip install torch --index-url https://download.pytorch.org/whl/cpu
+   :: ...or for an NVIDIA GPU (CUDA 12.1), use this instead of the CPU line:
+   :: pip install torch --index-url https://download.pytorch.org/whl/cu121
+   ```
+   **MoviePy 2.0+ is required.** `phonk_fx.py`/`main.py` use the v2 API (`clip.with_effects([vfx.MultiplySpeed(...)])`, `subclipped`, `with_audio`, `with_duration`, `resized`, `image_transform`); the 1.x API (`.fx`, `.subclip`, `.set_audio`) will not work.
+
+3. **FFmpeg on PATH** (required by `phonk_fx`'s bass boost and by MoviePy's reader/writer):
+   ```bat
+   winget install Gyan.FFmpeg
+   :: ...or: choco install ffmpeg
+   ```
+   Open a **new** terminal afterward (so the PATH change takes effect) and confirm `ffmpeg -version` resolves.
+
+4. **Qwen-VL model.** `main.py`'s default `--model-path` is the Hugging Face Hub repo id `Qwen/Qwen2-VL-2B-Instruct`, downloaded on first run into the HF cache (`%USERPROFILE%\.cache\huggingface`; relocate by setting `HF_HOME`). `semantic_filter` auto-detects: a Hub repo id is allowed to download, while an existing **local directory** path is loaded with `local_files_only=True` (fully offline). To run offline, pre-download the model (or copy a checkpoint dir) and pass that directory to `--model-path`. If a tokenizer load fails with `expected str, bytes or os.PathLike object, not NoneType` (a partial cache), delete `%USERPROFILE%\.cache\huggingface\hub\models--Qwen--Qwen2-VL-2B-Instruct` and re-run.
+
+Validate the environment, then run the pipeline:
+```bat
+python smoke_test.py
+python main.py --video gameplay.mp4 --audio phonk.mp3 ^
+    --prompt "shotgun close-range kills" --output final_edit.mp4
+```
+`smoke_test.py` reports `[PASS]`/`[FAIL]` per stage (dependency imports, file layout, CLI/pipeline flow). `^` above is the **cmd.exe** line-continuation; in PowerShell use a backtick `` ` `` (or just put it all on one line).

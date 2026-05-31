@@ -37,7 +37,7 @@ TIMELINE_SECONDS = WINDOW_BEFORE_DROP + WINDOW_AFTER_DROP
 
 CHUNK_SECONDS = 3.0         # length of each raw "candidate clip"
 MIN_SEGMENT_SECONDS = 0.75  # don't cut faster than this even on dense beats
-DEFAULT_MODEL_PATH = "bin/models/Qwen3-VL-2B-Instruct"
+DEFAULT_MODEL_PATH = "Qwen/Qwen2-VL-2B-Instruct"
 
 
 def log(step: str, message: str) -> None:
@@ -201,7 +201,7 @@ def build_montage(video_path: str, audio_path: str, output_path: str,
     removed, which keeps it leak-free and safe on Windows (an open file can't be
     deleted there).
     """
-    from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
+    from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips
     from phonk_fx import (
         apply_beat_zoom,
         apply_velocity_ramp,
@@ -240,7 +240,7 @@ def build_montage(video_path: str, audio_path: str, output_path: str,
                 src_start = min(float(cand["start"]),
                                 max(0.0, source.duration - 0.05))
                 src_end = min(float(cand["end"]), source.duration)
-                base = source.subclip(src_start, src_end)
+                base = source.subclipped(src_start, src_end)
                 opened.append(base)
 
                 # Velocity ramp: slow-mo lands on the beat, then rushes the next.
@@ -257,14 +257,14 @@ def build_montage(video_path: str, audio_path: str, output_path: str,
             video = concatenate_videoclips(timeline_clips, method="compose")
             opened.append(video)
             # Hard-clamp to the strict 30s budget regardless of any rounding.
-            video = video.set_duration(min(TIMELINE_SECONDS, video.duration))
+            video = video.with_duration(min(TIMELINE_SECONDS, video.duration))
             opened.append(video)
 
             # Audio: drop window of the phonk track, bass-boosted with an accent
             # pulsed on every beat (single FFmpeg pass; see phonk_fx).
             log("EDIT", f"Bass-boosting drop audio with an accent on "
                         f"{len(beat_grid)} beats (FFmpeg)...")
-            window_audio = AudioFileClip(audio_path).subclip(window_start, window_end)
+            window_audio = AudioFileClip(audio_path).subclipped(window_start, window_end)
             opened.append(window_audio)
             boosted_wav = os.path.join(work, "drop_boosted.wav")
             boosted = apply_beat_synced_bass_boost(
@@ -272,9 +272,9 @@ def build_montage(video_path: str, audio_path: str, output_path: str,
             )
             opened.append(boosted)
 
-            boosted = boosted.set_duration(video.duration)
+            boosted = boosted.with_duration(video.duration)
             opened.append(boosted)
-            final = video.set_audio(boosted)
+            final = video.with_audio(boosted)
             opened.append(final)
 
             log("RENDER", f"Writing polished montage to '{output_path}'...")
@@ -329,7 +329,7 @@ def main(argv=None) -> int:
         cuts = downbeat_cuts(result, win_start, win_end)
 
         # Need the gameplay duration + fps before chunking/scoring.
-        from moviepy.editor import VideoFileClip
+        from moviepy import VideoFileClip
         probe = VideoFileClip(args.video)
         try:
             video_duration = probe.duration

@@ -6,3 +6,5 @@ torchaudio
 transformers
 opencv-python
 numpy
+protobuf 
+sentencepiece

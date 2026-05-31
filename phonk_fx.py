@@ -28,10 +28,8 @@ import tempfile
 import cv2
 import numpy as np
 
-from moviepy.video.fx import resize as _resize_fx
-from moviepy.video.fx.speedx import speedx as _speedx
-from moviepy.video.compositing.concatenate import concatenate_videoclips
-from moviepy.audio.io.AudioFileClip import AudioFileClip
+# MoviePy v2.0+ public API (no moviepy.editor; effects live under `vfx`).
+from moviepy import AudioFileClip, concatenate_videoclips, vfx
 
 
 # --------------------------------------------------------------------------- #
@@ -99,25 +97,23 @@ def apply_beat_zoom(video_clip, zoom_factor: float = DEFAULT_ZOOM_FACTOR,
     """
     w, h = video_clip.size
 
-    zoomed = _resize_fx.resize(
-        video_clip,
-        lambda t: _punch_scale(t, zoom_factor, punch_duration),
+    # MoviePy 2.x: `resized` accepts a time-varying scale callable.
+    zoomed = video_clip.resized(
+        lambda t: _punch_scale(t, zoom_factor, punch_duration)
     )
 
-    # Re-crop to the original frame so the stream dimensions stay constant.
-    return zoomed.fx(_center_crop, w, h)
+    # Re-crop each (variably upscaled) frame to the original resolution so the
+    # output stream keeps constant dimensions. `image_transform` runs a pure
+    # frame->frame function in 2.x (the old `.fl` is gone).
+    return zoomed.image_transform(lambda frame: _center_crop_frame(frame, w, h))
 
 
-def _center_crop(clip, target_w: int, target_h: int):
-    """Centre-crop a (possibly upscaled) clip back to ``target_w`` x ``target_h``."""
-    def _crop_frame(get_frame, t):
-        frame = get_frame(t)
-        fh, fw = frame.shape[:2]
-        x0 = max((fw - target_w) // 2, 0)
-        y0 = max((fh - target_h) // 2, 0)
-        return frame[y0:y0 + target_h, x0:x0 + target_w]
-
-    return clip.fl(_crop_frame, apply_to=["mask"])
+def _center_crop_frame(frame: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """Centre-crop a single (possibly upscaled) frame to ``target_w`` x ``target_h``."""
+    fh, fw = frame.shape[:2]
+    x0 = max((fw - target_w) // 2, 0)
+    y0 = max((fh - target_h) // 2, 0)
+    return frame[y0:y0 + target_h, x0:x0 + target_w]
 
 
 # --------------------------------------------------------------------------- #
@@ -162,10 +158,10 @@ def apply_velocity_ramp(video_clip, target_duration: float,
 
     Crucially the returned clip is **exactly** ``target_duration`` seconds long
     regardless of the speed factors: the source footage consumed by each phase
-    is sized so that, after ``vfx.speedx``, the phase plays for its slice of the
-    slot. This keeps a stitched sequence locked to its time budget even though
-    the footage inside is speeding up and slowing down. A trailing
-    ``set_duration`` clamps away any sub-millisecond rounding drift.
+    is sized so that, after ``vfx.MultiplySpeed``, the phase plays for its slice
+    of the slot. This keeps a stitched sequence locked to its time budget even
+    though the footage inside is speeding up and slowing down. A trailing
+    ``with_duration`` clamps away any sub-millisecond rounding drift.
 
     Pure: returns a new clip; ``video_clip`` is not mutated.
 
@@ -203,22 +199,28 @@ def apply_velocity_ramp(video_clip, target_duration: float,
 
     parts = []
     if need_slow > 1e-3 and out_slow > 1e-3:
-        head = video_clip.subclip(0, need_slow).fx(_speedx, slow_factor)
+        head = video_clip.subclipped(0, need_slow).with_effects(
+            [vfx.MultiplySpeed(slow_factor)]
+        )
         parts.append(head)
     if need_fast > 1e-3 and out_fast > 1e-3:
         start = need_slow
-        tail = video_clip.subclip(start, start + need_fast).fx(_speedx, fast_factor)
+        tail = video_clip.subclipped(start, start + need_fast).with_effects(
+            [vfx.MultiplySpeed(fast_factor)]
+        )
         parts.append(tail)
 
     if not parts:
-        ramped = video_clip.subclip(0, min(target_duration, src_total or target_duration))
+        ramped = video_clip.subclipped(
+            0, min(target_duration, src_total or target_duration)
+        )
     elif len(parts) == 1:
         ramped = parts[0]
     else:
         ramped = concatenate_videoclips(parts, method="compose")
 
     # Enforce the exact slot budget so the 30s total can never drift.
-    return ramped.set_duration(target_duration)
+    return ramped.with_duration(target_duration)
 
 
 # ========================================================================== #
