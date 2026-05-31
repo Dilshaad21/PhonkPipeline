@@ -20,10 +20,13 @@ input untouched, so they compose cleanly inside a montage pipeline.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -88,6 +91,112 @@ DEFAULT_ACCENT_POST = 0.14      # seconds the accent stays open after the beat
 
 
 # ========================================================================== #
+#  STYLE CONFIG  (Engine B — dynamic stylistic parameters)
+# ========================================================================== #
+# bass_boost_intensity label -> low-shelf gain (dB) on the kick/bass band.
+BASS_INTENSITY_DB = {"low": 6, "med": 12, "max": 18}
+
+# Recognized presets for apply_color_grade / accepted cut densities.
+KNOWN_COLOR_PRESETS = ("high_contrast_dark",)
+KNOWN_CUT_DENSITIES = ("low", "high")
+
+
+def resolve_bass_gain(intensity: str) -> int:
+    """Map a ``bass_boost_intensity`` label ("low"/"med"/"max") to gain in dB."""
+    try:
+        return BASS_INTENSITY_DB[str(intensity).lower()]
+    except KeyError:
+        raise ValueError(
+            f"bass_boost_intensity must be one of {sorted(BASS_INTENSITY_DB)}; "
+            f"got {intensity!r}."
+        )
+
+
+@dataclass(frozen=True)
+class StyleConfig:
+    """Dynamic montage styling loaded from a ``--style_json`` file (Engine B).
+
+    Unset keys fall back to defaults that reproduce the baseline (Engine A)
+    look, so a partial JSON object is valid. ``from_file`` parses and validates;
+    a bad enum value raises ``ValueError`` so a config typo fails fast rather
+    than silently rendering the wrong style.
+
+    Fields
+    ------
+    velocity_ramp_peak : float
+        Max speed-up factor for the velocity ramp (the sped-up tail into the
+        next beat). Feeds ``apply_velocity_ramp(fast_factor=...)``.
+    bass_boost_intensity : str
+        "low" | "med" | "max" -> low-shelf gain in dB (see ``BASS_INTENSITY_DB``).
+    screen_shake_multiplier : float
+        Multiplies the base zoom punch in ``apply_beat_zoom``.
+    color_grade_preset : str or None
+        e.g. "high_contrast_dark"; ``None`` disables grading.
+    cut_density : str
+        "low" (cut only on major downbeats) | "high" (cut on every beat). Read
+        by the orchestrator when building the beat grid.
+    """
+
+    velocity_ramp_peak: float = DEFAULT_FAST_FACTOR
+    bass_boost_intensity: str = "med"
+    screen_shake_multiplier: float = 1.0
+    color_grade_preset: Optional[str] = None
+    cut_density: str = "low"
+
+    @classmethod
+    def from_file(cls, path) -> "StyleConfig":
+        """Load + validate a StyleConfig from a JSON file (OS-agnostic path)."""
+        path = os.fspath(path)
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("style JSON must be a top-level object/dict.")
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StyleConfig":
+        d = cls()  # defaults
+
+        peak = float(data.get("velocity_ramp_peak", d.velocity_ramp_peak))
+        if peak <= 0:
+            raise ValueError("velocity_ramp_peak must be > 0.")
+
+        shake = float(data.get("screen_shake_multiplier", d.screen_shake_multiplier))
+        if shake < 0:
+            raise ValueError("screen_shake_multiplier must be >= 0.")
+
+        intensity = str(data.get("bass_boost_intensity", d.bass_boost_intensity)).lower()
+        if intensity not in BASS_INTENSITY_DB:
+            raise ValueError(
+                f"bass_boost_intensity must be one of {sorted(BASS_INTENSITY_DB)}; "
+                f"got {intensity!r}."
+            )
+
+        preset = data.get("color_grade_preset", d.color_grade_preset)
+        if preset not in (None, "") and str(preset).lower() not in KNOWN_COLOR_PRESETS:
+            raise ValueError(
+                f"color_grade_preset must be one of {list(KNOWN_COLOR_PRESETS)} "
+                f"or null; got {preset!r}."
+            )
+        preset = str(preset).lower() if preset else None
+
+        density = str(data.get("cut_density", d.cut_density)).lower()
+        if density not in KNOWN_CUT_DENSITIES:
+            raise ValueError(
+                f"cut_density must be one of {list(KNOWN_CUT_DENSITIES)}; "
+                f"got {density!r}."
+            )
+
+        return cls(
+            velocity_ramp_peak=peak,
+            bass_boost_intensity=intensity,
+            screen_shake_multiplier=shake,
+            color_grade_preset=preset,
+            cut_density=density,
+        )
+
+
+# ========================================================================== #
 #  BEAT ZOOM
 # ========================================================================== #
 def _punch_scale(t: float, zoom_factor: float, punch_duration: float) -> float:
@@ -105,7 +214,8 @@ def _punch_scale(t: float, zoom_factor: float, punch_duration: float) -> float:
 
 
 def apply_beat_zoom(video_clip, zoom_factor: float = DEFAULT_ZOOM_FACTOR,
-                    punch_duration: float = DEFAULT_PUNCH_DURATION):
+                    punch_duration: float = DEFAULT_PUNCH_DURATION,
+                    shake_multiplier: float = 1.0):
     """Apply a sudden, smooth scale "screen jump" on the beat to ``video_clip``.
 
     The clip is scaled up at t=0 and decays back to its native size, then
@@ -121,6 +231,9 @@ def apply_beat_zoom(video_clip, zoom_factor: float = DEFAULT_ZOOM_FACTOR,
         Peak scale at the beat frame (1.15 == a 15 % jump).
     punch_duration : float
         Seconds for the zoom to relax back to 1.0.
+    shake_multiplier : float
+        Multiplies the base ``zoom_factor`` (Engine B screen_shake_multiplier);
+        1.0 leaves the punch unchanged, >1.0 makes it more violent.
 
     Returns
     -------
@@ -129,9 +242,12 @@ def apply_beat_zoom(video_clip, zoom_factor: float = DEFAULT_ZOOM_FACTOR,
     """
     w, h = video_clip.size
 
+    # screen_shake_multiplier scales the peak zoom; 1.0 == the base punch.
+    effective_zoom = zoom_factor * shake_multiplier
+
     # MoviePy 2.x: `resized` accepts a time-varying scale callable.
     zoomed = video_clip.resized(
-        lambda t: _punch_scale(t, zoom_factor, punch_duration)
+        lambda t: _punch_scale(t, effective_zoom, punch_duration)
     )
 
     # Re-crop each (variably upscaled) frame to the original resolution so the
@@ -253,6 +369,46 @@ def apply_velocity_ramp(video_clip, target_duration: float,
 
     # Enforce the exact slot budget so the 30s total can never drift.
     return ramped.with_duration(target_duration)
+
+
+# ========================================================================== #
+#  COLOR GRADE  (Engine B)
+# ========================================================================== #
+def _grade_high_contrast_dark(frame: np.ndarray) -> np.ndarray:
+    """+30% contrast around mid-grey, then darken the midtones via gamma.
+
+    Operates on a single RGB uint8 frame and returns a uint8 frame, so it slots
+    straight into MoviePy's ``image_transform``.
+    """
+    f = frame.astype(np.float32)
+    # Contrast: push values away from mid-grey (128) by 30%.
+    f = (f - 128.0) * 1.3 + 128.0
+    f = np.clip(f, 0.0, 255.0)
+    # Darken midtones: gamma > 1 pulls the mid-range down without crushing
+    # blacks or blowing out highlights.
+    f = 255.0 * np.power(f / 255.0, 1.25)
+    return np.clip(f, 0.0, 255.0).astype(np.uint8)
+
+
+_COLOR_GRADERS = {"high_contrast_dark": _grade_high_contrast_dark}
+
+
+def apply_color_grade(video_clip, preset: Optional[str]):
+    """Apply a named color-grade preset to ``video_clip`` (Engine B).
+
+    ``"high_contrast_dark"`` raises contrast ~30% and darkens the midtones for a
+    moodier phonk look. A falsy ``preset`` is a no-op (returns the clip
+    unchanged), so callers can invoke it unconditionally. Pure: returns a new
+    clip; the input is not mutated.
+    """
+    if not preset:
+        return video_clip
+    grader = _COLOR_GRADERS.get(str(preset).lower())
+    if grader is None:
+        raise ValueError(
+            f"Unknown color_grade_preset {preset!r}; known: {sorted(_COLOR_GRADERS)}."
+        )
+    return video_clip.image_transform(grader)
 
 
 # ========================================================================== #
@@ -451,11 +607,17 @@ def apply_beat_synced_bass_boost(audio_clip, beat_times, out_path=None,
 __all__ = [
     "apply_beat_zoom",
     "apply_velocity_ramp",
+    "apply_color_grade",
     "apply_phonk_bass_boost",
     "apply_beat_synced_bass_boost",
     "build_bass_boost_filter",
     "build_beat_synced_bass_filter",
+    "resolve_bass_gain",
     "zoom_frame",
+    "StyleConfig",
+    "BASS_INTENSITY_DB",
+    "KNOWN_COLOR_PRESETS",
+    "KNOWN_CUT_DENSITIES",
     "DEFAULT_ZOOM_FACTOR",
     "DEFAULT_PUNCH_DURATION",
     "DEFAULT_LOW_GAIN_DB",
