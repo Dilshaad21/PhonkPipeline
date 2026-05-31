@@ -1,0 +1,1335 @@
+
+--- START FILE: auto-gaming-montage-maker/testing_models.py ---
+import cv2
+import numpy as np
+import os
+import sys
+
+cap = cv2.VideoCapture(
+    r"C:\Users\noah\Downloads\2160test.mp4")
+cap.set(cv2.CAP_PROP_POS_MSEC, 3000)
+ret, frame = cap.read()
+H, W, _ = frame.shape
+out = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), int(cap.get(cv2.CAP_PROP_FPS)), (W, H))
+frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+frame_fps = int(cap.get(cv2.CAP_PROP_FPS))
+print(frame_width, frame_height, frame_fps)
+
+threshold = 0.2
+
+
+def absolute_paths(specifiedpath):
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), specifiedpath)
+
+
+def replace_non_white_with_black(image):
+    # Define the white color range
+    lower_bound = np.array([217, 217, 217])  # 240 remember
+    upper_bound = np.array([255, 255, 255])
+
+    # Create a mask where pixels are within the defined range
+    mask = np.all((image >= lower_bound) & (image <= upper_bound), axis=-1)
+
+    # Replace non-white pixels with black
+    image[~mask] = [0, 0, 0]
+
+    return image
+
+
+amount_frames_to_skip = 25
+
+which_game = 'Fortnite'
+detection_already_found = False
+templates = []
+specified_res_dir = absolute_paths(rf"template_matching_resolutions/{str(frame_height)}p")  # old_images
+for filename in os.listdir(specified_res_dir):
+    if which_game.replace(" ", "") in filename:
+        templates.append((filename, cv2.imread(specified_res_dir + rf"/{filename}", cv2.IMREAD_COLOR)))
+while ret:
+    current_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC)
+    print(f"Time: {current_timestamp / 60000} minutes")
+    for template_name, template in templates:
+
+        if detection_already_found:
+            detection_already_found = False
+            break
+        tH, tW, _ = template.shape
+
+        start_y = (H // 2) + int((200 * H) / 1440)
+        end_y = start_y + (H // 4) - int((100 * H) / 1440)
+        start_x = W // 3
+        end_x = start_x + (W // 5)
+        cropped_frame = frame[start_y:end_y, start_x:end_x]
+        frame_mask = replace_non_white_with_black(cropped_frame)
+
+        res = cv2.matchTemplate(frame_mask, template, cv2.TM_CCOEFF_NORMED)
+        loc = np.where(res >= threshold)
+
+        for pt in zip(*loc[::-1]):  # Switch columns and rows
+            top_left = (pt[0] + start_x, pt[1] + start_y)
+            bottom_right = (top_left[0] + tW, top_left[1] + tH)
+            cv2.rectangle(frame, top_left, bottom_right, (0, 255, 0), 4)
+            cv2.putText(frame, template_name, (top_left[0], top_left[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.3,
+                        (0, 255, 0), 3, cv2.LINE_AA)
+            print("found detection here ", template_name)
+            # cv2.imwrite("temp1.png", template)
+            # cv2.imwrite("edited_frame.png", frame_mask)
+            out.write(frame)
+            detection_already_found = True
+            break
+
+    for _ in range(1, amount_frames_to_skip):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+cap.release()
+out.release()
+cv2.destroyAllWindows()
+
+--- END FILE: auto-gaming-montage-maker/testing_models.py ---
+
+--- START FILE: auto-gaming-montage-maker/editor_gui.py ---
+import PySimpleGUI as sg
+import subprocess
+import platform
+import os
+from PIL import ImageColor
+import matplotlib.font_manager as fm
+import threading
+import shutil
+import signal
+from packagefiles.video_transcribe_audio import process_arguments
+from packagefiles.video_remove_silence import remove_silence_main
+from packagefiles.edit_video import auto_game_montage
+import multiprocessing
+
+run_next_thread = False
+base64_image = b'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAH+UExURQAAAP87If87If87If87If87If87If87If87If87If87ISUjJFAlIe5sFiUjJCMgIfU5IP87If46IPI5IKszH7lxFf93Fv90Fv9xF+pbGsMzINQ2IaovH62jC//xANnNBZGID6yKEfmAE/d4FL9JG9s2IKaRDvPOA+/FBX5UF89EHe04IF9YFf/wAPjeAe/DBL2VENA/Iek6IH9bFv7wAPvlAcKeC7Z1Eug5IKNlFO3gAv7xAPniAfDTA8N6EYstIMyUDuvdAvPNBJF7EfZcGeE3IPmQEfnsAP7oAfjWAvC3B/C1B/CzCIYrIP49IP63Cv+7Cf++Cf/BCNjMBfvoAO/CBdWkCfxBH6EvH6+lC/faAr6bC/CJELkyIP9IL/5zFsi2B/zpAPTRA+m3C7tQKHVTT/7sAPDFBGtZFftJHvw8I/k6IIpCG9WtCHwtH5k7HczABvzsAO7CBYNsE+BYGbIxILUxIOc4IP6UEcq+B/3tAPjfAvjeAtzHBaOZDZZ7EIpDG/5AH+5IJFk/KzYyHaCWDfrjAfHKA3dEGtw/H+o4IU9JGP3sAOK7BquCENc1IO44IIpYGfvnAfnhAc6RDXEvHn9CHOLVBPTUA6yTDfVzFMw0IGknIOPRBPDJBFw8GuVBHtVaGcilCcKQDMEzIPlnGMGLDYU8HMYzIP///xk1TTUAAAARdFJOUwAMWp+/Hg+PLc/vBoP2ARovY7xO3wAAAAFiS0dEqScPBgQAAAAHdElNRQfnCw0WKRQEGPwCAAABjklEQVQ4y2NggANGJmYWQSBgYWZiZMAErMyCSICZFU2ajV0QDbCzIctzcApiAE4OJHkuuLCQMJzJxYFFXlBEVExcQlJKGlkFG5L5MrJyQCCvoKikrAK0BeIOJPepqslBgLqGphbIpWD/IeS1dUCSunJ6+gaGELeAfIvwv5ExSN7E1MzcAh4ewPBDGGBpJSdnbWNrZ4/kWUYGJjjbwREo7+Ts4oocGkwIG9xMwBa4e3h6efv4IuxggbL8/AMCg4JBSkJCw8LhJrAwIJsXEQlUEBUdE4skBlYQB2HHJ8jJJSYlp6BECZIJqWlAV6RnZGZhV5CdYy1nHZWbhx6pcEfmF8hZFxYVl5SWlSPLs8C8WVEJDISq6prauvoGZAXMsIBqbGpuabWWk2tr7+hEDSh4UHd1y8n19Pb1ozqBER5ZEybqTpo8ZSqaE5kR0T1t+oyZs2aj+4EVnmDmzJ03fwG6NCTBgJPcwkWLl2BIw5IcMNEuXbYcUxqRrLl5eFfgk2fg4xcgkHEIZz3CmRd39gcA0k9l8LbQyIEAAAAldEVYdGRhdGU6Y3JlYXRlADIwMjMtMTEtMTNUMjI6NDE6MjArMDA6MDC1A2E6AAAAJXRFWHRkYXRlOm1vZGlmeQAyMDIzLTExLTEzVDIyOjQxOjIwKzAwOjAwxF7ZhgAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyMy0xMS0xM1QyMjo0MToyMCswMDowMJNL+FkAAAAASUVORK5CYII='
+already_occured = False
+
+if __name__ == '__main__':
+    # Pyinstaller fix because ultralytics references differently
+    multiprocessing.freeze_support()
+
+
+def cls():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
+def retrieve_default_music():
+    file_names = [f for f in os.listdir('default_audio') if os.path.isfile(os.path.join('default_audio', f))]
+    file_names.extend(['other', 'none'])
+    return file_names
+
+
+def retrieve_available_fonts():
+    system_fonts = fm.findSystemFonts(fontpaths=None, fontext='ttf')
+    font_names = [os.path.splitext(os.path.basename(font))[0] for font in system_fonts]
+    return font_names
+
+
+def retrieve_available_colors():
+    available_colors = list(ImageColor.colormap.keys())
+    return available_colors
+
+
+sg.theme('Black')
+dropdown_options4 = [("center"), ("center", "top"), ("center", "bottom"), ("left", "top"), ("right", "top"),
+                     ("left", "bottom"), ("right", "bottom")]
+dropdown_options = ["tiny", "base", "small", "medium", "large"]
+dropdown_games = ["Fortnite", "MW 2019", "MWII 2022", "MWIII 2023", "Apex Legends",
+                  "Rainbow Six Siege", "PUBG Mobile", "PUBG PC", "Destiny 2", "Rocket League", "CSGO", "Valorant", "Overwatch",
+                  "Minecraft (PVP server)"]
+# Define the layout of the GUI
+auto_montage_layout = [
+    [sg.Text('Choose text for intro clip:', tooltip="If you leave this blank there will be no intro text title"),
+     sg.InputText(size=(20, 1), key='title_text', tooltip="If you leave this blank there will be no intro text title")],
+    [sg.Text("Which game is this?"),
+     sg.Drop(values=dropdown_games, background_color='white', key="which_game", default_value="Fortnite",
+             readonly=True, text_color='black',
+             tooltip="Choose the game that your video contains.")],
+    [sg.Text("Choose montage music"),
+     sg.Drop(values=retrieve_default_music(), background_color='white', key="dropdown_audio",
+             default_value="Shadows - Anno Domini Beats.mp3",
+             readonly=True, text_color='black', size=30,
+             tooltip="Choose the audio you want to overlay over your montage"),
+     sg.FileBrowse(file_types=(("Audio Files", "*.mp3;*.wav;*.flac;*.ogg"),), visible=False,
+                   key='music_choice', tooltip="Supported file types include: *.mp3;*.wav;*.flac;*.ogg")],
+    [sg.Text("Edit with video effects:"),
+     sg.Drop(values=["yes", "no"], background_color='white', key="effects_bool", default_value="yes",
+             readonly=True, text_color='black',
+             tooltip="This is selecting if you want video effects in the video or just the highlights, letting you edit yourself.")],
+    [sg.Text("Adjust Music Volume (%):",
+             tooltip="Volume of the overlayed music from 0-200%"),
+     sg.Slider(range=(0, 200), default_value=100, orientation='h', size=(23, 10), trough_color="white",
+               border_width=6,
+               key='music_volume', tooltip="Volume of the overlayed music from 0-200%")],
+    [sg.Text("Make editing faster (frames):\n(forfit precision for speed)",
+             tooltip="You can increase model speed by skipping frames in the video, by default this skips by 2 frames\ndepending on your video's FPS, "),
+     sg.Slider(range=(2, 100), default_value=2, orientation='h', size=(23, 10), trough_color="white",
+               border_width=6,
+               key='skip_frames',
+               tooltip="This is in frames, you have the ability to skip 2-625 frames within the video")],
+]
+auto_captions_layout = [
+    [sg.Text("Select model size: \n(smaller the model, quicker the export)"),
+     sg.Drop(values=dropdown_options, background_color='white', key="dropdown_option", default_value="tiny",
+             readonly=True, text_color='black',
+             tooltip="It transcribes your video's audio with a model, by default it is tiny,\nyou can choose a larger model to make it more accurate at the\nexpense of taking longer")],
+    [sg.Text("Adjust text color/font/position/size:")],
+    [sg.Text("Color:    "),
+     sg.Drop(values=retrieve_available_colors(), background_color='white', key="dropdown_option2",
+             default_value="white",
+             readonly=True, text_color='black',
+             tooltip="this is the text color that will overlay\non your edited video")],
+    [sg.Text("Font:     "),
+     sg.Drop(values=retrieve_available_fonts(), background_color='white', key="dropdown_option3",
+             default_value="choose a font",
+             size=(21, 1),
+             readonly=True, text_color='black',
+             tooltip="this is the font style for the overlay text")],
+    [sg.Text("Position:"),
+     sg.Drop(values=dropdown_options4, background_color='white', key="dropdown_option4",
+             default_value=("center", "bottom"), size=(21, 1),
+             readonly=True, text_color='black',
+             tooltip="this is the position for the overlay text")],
+    [sg.Text("Text Size:", tooltip="Adjust the size of the output overlay text")],
+    [sg.Slider(range=(0, 200), default_value=100, orientation='h', size=(30, 10), trough_color="white",
+               border_width=6,
+               key='-SIZE-', tooltip="Font size/text size of overlay text")],
+]
+silence_removal_layout = [
+    [sg.Text("Adjust Silence Threshold:",
+             tooltip="To remove silence, the program needs to know what\n volume is considered silence in your video, by default it is -50.")],
+    [sg.Slider(range=(-100, 100), default_value=-50, orientation='h', size=(30, 10), trough_color="white",
+               border_width=6, key='-THRESHOLD-',
+               tooltip="To remove silence, the program needs to know what\n volume is considered silence in your video, by default it is -50.")],
+]
+
+layout = [
+    [sg.InputText(key="video_file", disabled=True, default_text=r"Select one or multiple video file(s) to edit *",
+                  tooltip="The video(s) you want to be edited, make sure file names don't have ';' in them",
+                  text_color='black'),
+     sg.FilesBrowse()],
+    # This file specification code will only work as an argument on Windows systems: file_types=(("Video Files", "*.mp4;*.avi;*.mkv;*.mov;*.wmv;*.flv;*.webm"),)
+    [sg.InputText(key="output_folder", default_text=r"Select an output folder", disabled=True,
+                  tooltip="The folder where you want the edited video to export", text_color='black'),
+     sg.FolderBrowse()],
+    [sg.Checkbox("Remove Silent Portions", key="option1",
+                 tooltip="If selected, this option will cut out all detected silence from your video"),
+     sg.Checkbox("Automatic Captions", key="option2",
+                 tooltip="If selected, this option will automatically transcribe your\nvideo audio and place captions for every word on to the edited video")],
+    [sg.Checkbox("Automatic Video Game Montage", key="option3",
+                 tooltip="If selected, this option will create an automatic video montage from a directory\n full of clips or a video. SUPPORTED GAMES INCLUDE: Fortnite, Apex Legends, Call of Duty,\nRocket League, CSGO, Valorant, Overwatch, or Minecraft PVP.")],
+    [sg.pin(sg.Column(silence_removal_layout, key='-ROW1-', visible=False, pad=(0, 0)))],
+    [sg.pin(sg.Column(auto_captions_layout, key='-ROW2-', visible=False, pad=(0, 0)))],
+    [sg.pin(sg.Column(auto_montage_layout, key='-ROW3-', visible=False, pad=(0, 0)))],
+    [sg.Text('Loading . . .', key='loading_text', visible=False, text_color='yellow')],
+    [sg.Button("Edit Video", visible=True, button_color=('white', 'green')),
+     sg.Button("Cancel", visible=False, button_color=('white', 'darkred'))],
+    [sg.Button("Output Folder", visible=False, button_color=('black', 'lightblue'))]
+]
+# Create the window
+window = sg.Window("Automatic Video Editing", layout, icon=base64_image)
+# Event loop
+while True:
+    event, values = window.read(timeout=200)
+    if event == sg.WINDOW_CLOSED:
+        if os.path.isdir("output_images"):
+            shutil.rmtree("output_images")
+        if os.path.exists("output_audio.wav"):
+            os.remove("output_audio.wav")
+        break
+    if len(values['title_text']) > 12 and not already_occured:
+        already_occured = True
+        sg.popup('This textbox only accepts 12 characters even if you type more.', title='Warning')
+    if values["option1"]:
+        window['-ROW1-'].update(visible=True)
+    else:
+        window['-ROW1-'].update(visible=False)
+    if values["option2"]:
+        window['-ROW2-'].update(visible=True)
+    else:
+        window['-ROW2-'].update(visible=False)
+    if values["option3"]:
+        window['option1'].update(disabled=True)
+        window['option2'].update(disabled=True)
+        window['-ROW3-'].update(visible=True)
+        if values['dropdown_audio'] == 'other':
+            window['music_choice'].update(visible=True)
+        else:
+            window['music_choice'].update(visible=False)
+        try:
+            window['-ROW2-'].update(visible=False)
+            window['-ROW1-'].update(visible=False)
+        except:
+            pass
+    else:
+        window['-ROW3-'].update(visible=False)
+        window['option1'].update(disabled=False)
+        window['option2'].update(disabled=False)
+    try:
+        if not run_thread.is_alive():
+            filename1, extension1 = os.path.basename(values["video_file"]).split('.')
+            new_filename = f"{filename1}_output.mp4"
+            dualProcessFilePath = output2 + '/' + new_filename
+            if run_next_thread:
+                next_thread = threading.Thread(target=remove_silence_main,
+                                               args=(dualProcessFilePath, output2, str(values["-THRESHOLD-"])))
+                next_thread.start()
+                next_thread.join()
+                run_next_thread = False
+                os.remove(dualProcessFilePath)
+            window['Edit Video'].update(visible=True)
+            window['Cancel'].update(visible=False)
+            window['loading_text'].update(visible=False)
+            window['Output Folder'].update(visible=True)
+            shutil.rmtree("output_images")
+            os.remove("output_audio.wav")
+    except:
+        pass
+    if event == "Output Folder":
+        if values["output_folder"] == 'Select an output folder':
+            if ';' in values["video_file"]:
+                output1 = os.path.dirname(values["video_file"].split(';')[0])
+            else:
+                output1 = os.path.dirname(values["video_file"])
+        else:
+            output1 = values["output_folder"]
+        path_with_backslashes = output1.replace('/', '\\')
+        if platform.system() == "Windows":
+            subprocess.Popen(['explorer', path_with_backslashes])
+        elif platform.system() == "Darwin":
+            subprocess.Popen(['open', output1])
+        else:
+            try:
+                subprocess.Popen(['xdg-open', output1])
+            except FileNotFoundError:
+                try:
+                    subprocess.Popen(['nautilus', output1])
+                except FileNotFoundError:
+                    try:
+                        subprocess.Popen(['dolphin', output1])
+                    except FileNotFoundError:
+                        try:
+                            subprocess.Popen(['thunar', output1])
+                        except FileNotFoundError:
+                            print("Could not open directory. Please check your file manager installation.")
+    if event == "Cancel":
+        if os.path.isdir("output_images"):
+            shutil.rmtree("output_images")
+        os.kill(os.getpid(), signal.SIGINT)
+    elif event == "Edit Video":
+        if values["output_folder"] == 'Select an output folder':
+            if ';' in values["video_file"]:
+                first_path = values["video_file"].split(';')[0]
+            else:
+                first_path = values["video_file"]
+            output2 = os.path.dirname(first_path)
+        else:
+            output2 = values["output_folder"]
+        if values["video_file"] == "Select one or multiple video file(s) to edit *" or (
+                not values["option1"] and not values["option2"] and not values["option3"]) or values[
+            'dropdown_audio'] == 'other':
+            sg.popup("Please select a video file, music file, or editing style.", title="Error", icon="ERROR")
+        else:
+            if values["option3"]:
+                try:
+                    cls()
+                    run_thread = threading.Thread(target=auto_game_montage, args=(
+                        values["video_file"], output2, values['dropdown_audio'], values['music_volume'],
+                        values['which_game'], int(values['skip_frames']), values['effects_bool'],
+                        values['title_text'][:12]))
+                    run_thread.start()
+                except Exception as e:
+                    sg.popup(e, title="No highlights detected", icon="ERROR")
+            else:
+                if values["option1"] and values["option2"]:
+                    try:
+                        cls()
+                        run_thread = threading.Thread(
+                            target=process_arguments,
+                            args=(
+                                values["video_file"], "True", output2, values["dropdown_option"],
+                                values["dropdown_option2"],
+                                values["dropdown_option3"], f'{values["dropdown_option4"]}', str(values["-SIZE-"])))
+                        run_thread.start()
+                        run_next_thread = True
+                    except Exception as e:
+                        sg.popup(e, title="Error", icon="ERROR")
+                else:
+                    if values["option1"]:
+                        try:
+                            cls()
+                            run_thread = threading.Thread(target=remove_silence_main,
+                                                          args=(
+                                                              values["video_file"], output2,
+                                                              str(values["-THRESHOLD-"])))
+                            run_thread.start()
+                        except Exception as e:
+                            sg.popup(e, title="Error", icon="ERROR")
+                    else:
+                        if values["option2"]:
+                            try:
+                                cls()
+                                run_thread = threading.Thread(
+                                    target=process_arguments,
+                                    args=(values["video_file"], "True", output2, values["dropdown_option"],
+                                          values["dropdown_option2"],
+                                          values["dropdown_option3"], f'{values["dropdown_option4"]}',
+                                          str(values["-SIZE-"])))
+                                run_thread.start()
+                            except Exception as e:
+                                sg.popup(e, title="Error", icon="ERROR")
+            window['Output Folder'].update(visible=False)
+            window['Edit Video'].update(visible=False)
+            window['Cancel'].update(visible=True)
+            window['loading_text'].update(visible=True)
+window.close()
+
+--- END FILE: auto-gaming-montage-maker/editor_gui.py ---
+
+--- START FILE: auto-gaming-montage-maker/check_platform.py ---
+import platform
+import subprocess
+import os
+
+def is_macos():
+    return platform.system() == "Darwin"
+
+def is_homebrew_installed():
+    try:
+        subprocess.run(["brew", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def is_ffmpeg_installed():
+    try:
+        subprocess.run(["ffmpeg", "-version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def install_homebrew():
+    try:
+        subprocess.run(
+            '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+            check=True,
+            shell=True
+        )
+        print("Homebrew installed successfully.")
+    except subprocess.CalledProcessError:
+        print("Failed to install Homebrew.")
+        exit(1)
+
+def install_ffmpeg():
+    try:
+        subprocess.run(["brew", "install", "ffmpeg"], check=True)
+        print("FFmpeg installed successfully.")
+    except subprocess.CalledProcessError:
+        print("Failed to install FFmpeg.")
+        exit(1)
+
+def main():
+    if is_macos():
+        print("You are on macOS.")
+        
+        if not is_homebrew_installed():
+            print("Homebrew is not installed. Installing Homebrew...")
+            install_homebrew()
+        else:
+            print("Homebrew is already installed.")
+        
+        if not is_ffmpeg_installed():
+            print("FFmpeg is not installed. Installing FFmpeg...")
+            install_ffmpeg()
+        else:
+            print("FFmpeg is already installed.")
+    else:
+        print("You are not on macOS.")
+
+--- END FILE: auto-gaming-montage-maker/check_platform.py ---
+
+--- START FILE: auto-gaming-montage-maker/training.py ---
+from ultralytics import YOLO
+
+model = YOLO("yolov8n.yaml")  # path to your YAML config file
+results = model.train(data=r"path\to\your\dataset.yolov8\data.yaml", epochs=50)  # path to your dataset YAML file
+
+--- END FILE: auto-gaming-montage-maker/training.py ---
+
+--- START FILE: auto-gaming-montage-maker/packagefiles/ffprobe.py ---
+import json
+import subprocess
+
+
+def _get_json(path):
+    result = subprocess.run(['ffprobe', path, '-loglevel', 'quiet', '-print_format', 'json', '-show_streams'],
+                            stdout=subprocess.PIPE)
+    result.check_returncode()
+    return json.loads(result.stdout)
+
+
+def get_resolution(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            return stream['width'], stream['height']
+
+
+def get_frames(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            if 'nb_frames' in stream:
+                return int(stream['nb_frames'])
+
+
+def get_duration(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            if 'duration' in stream:
+                return float(stream['duration'])
+            else:
+                parts = stream['tags']['DURATION'].split(':')
+                assert len(parts) == 3
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+
+
+def get_frame_rate(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            if 'avg_frame_rate' in stream:
+                assert stream['avg_frame_rate'].count('/') <= 1
+                parts = stream['avg_frame_rate'].split('/')
+                result = float(parts[0])
+                if len(parts) == 2:
+                    result /= float(parts[1])
+                return result
+
+--- END FILE: auto-gaming-montage-maker/packagefiles/ffprobe.py ---
+
+--- START FILE: auto-gaming-montage-maker/packagefiles/video_transcribe_audio.py ---
+import os
+import re
+import ast
+import logging
+
+from PIL import Image, ImageDraw, ImageFont
+from faster_whisper import WhisperModel
+from moviepy.editor import VideoFileClip, ImageClip
+from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+
+logging.disable(logging.CRITICAL)
+
+
+def process_arguments(*args):
+    def create_text_image(text, output_path, fontstyle, fontsize, text_color):
+        image_width = 600
+        image_height = 300
+        img = Image.new("RGBA", (image_width, image_height), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(img)
+        font_settings = ImageFont.truetype(fontstyle, fontsize)
+        bbox = draw.textbbox((0, 0), text, font=font_settings)
+        x = (image_width - (bbox[2] - bbox[0])) // 2
+        y = (image_height - (bbox[3] - bbox[1])) // 2
+        draw.text((x, y), text, fill=text_color, font=font_settings)
+        img.save(output_path)
+
+    outputFolder = args[2]
+    if args[1]:
+        if args[2] == 'Select an output folder':
+            outputFolder = ''
+        else:
+            outputFolder += '/'
+
+        def convert_video_to_audio(video_path, audio_path):
+            video = VideoFileClip(video_path)
+            audio = video.audio
+            audio.write_audiofile(audio_path, logger=None, )
+            audio.close()
+
+        video_file_path = args[0]
+        video_clip = VideoFileClip(video_file_path)
+        audio_file_path = 'output_audio.wav'
+        convert_video_to_audio(video_file_path, audio_file_path)
+        model_size = args[3]
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        segments, info = model.transcribe(audio_file_path, beam_size=5, word_timestamps=True)
+        os.makedirs("output_images", exist_ok=True)
+        text_clips = []
+        for inner_list in info.word_info:
+            for word in inner_list:
+                start_time = word.start
+                end_time = word.end
+                word_text = re.sub(r'\W+', '', word.word)
+                text_image_path = f"output_images/{word_text}.png"
+                create_text_image(word_text, text_image_path, args[5], float(args[7]), args[4])
+                image_clip = ImageClip(text_image_path, duration=end_time - start_time)
+                text_clip = image_clip.set_start(start_time).set_end(end_time).set_position(
+                    ast.literal_eval(args[6]))
+                text_clips.append(text_clip)
+        # Composite the video with the text clips
+        video_with_text = CompositeVideoClip([video_clip] + text_clips)
+        # default video path name for output of export
+        file_name = os.path.basename(video_file_path)
+        file_name_without_extension = os.path.splitext(file_name)[0]
+        # Export the final video
+        video_with_text.write_videofile(f"{outputFolder}{file_name_without_extension}_output.mp4", codec='libx264',
+                                        logger=None,
+                                        fps=video_clip.fps)
+
+--- END FILE: auto-gaming-montage-maker/packagefiles/video_transcribe_audio.py ---
+
+--- START FILE: auto-gaming-montage-maker/packagefiles/__init__.py ---
+
+--- END FILE: auto-gaming-montage-maker/packagefiles/__init__.py ---
+
+--- START FILE: auto-gaming-montage-maker/packagefiles/video_remove_silence.py ---
+#!/usr/bin/env python3
+
+import collections
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import wave
+from . import ffprobe
+
+
+def remove_silence_main(path, output_directory, adjust_threshold):
+    threshold_duration = 0.2
+    constant = 0
+    sublinear = 0
+    linear = 0.1
+    save_silence = None
+    recalculate_time_in_description = None
+
+    adjust_threshold = float(adjust_threshold)
+    if output_directory == 'Select an output folder':
+        directory_path = os.path.dirname(path) + '/'
+    else:
+        directory_path = output_directory + '/'
+
+    def find_silences(filename):
+        blend_duration = 0.005
+        with wave.open(filename) as wav:
+            size = wav.getnframes()
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            frame_rate = wav.getframerate()
+            max_value = 1 << (8 * sample_width - 1)
+            half_blend_frames = int(blend_duration * frame_rate / 2)
+            blend_frames = half_blend_frames * 2
+            assert size > blend_frames > 0
+            square_threshold = max_value ** 2 * 10 ** (adjust_threshold / 10)
+            blend_squares = collections.deque()
+            blend = 0
+
+            def get_values():
+                frames_read = 0
+                while frames_read < size:
+                    frames = wav.readframes(min(0x1000, size - frames_read))
+                    frames_count = len(frames) // sample_width // channels
+                    for frame_index in range(frames_count):
+                        yield frames[frame_index * channels * sample_width:(frame_index + 1) * channels * sample_width]
+                    frames_read += frames_count
+
+            def get_is_silence(blend):
+                results = 0
+                frames = get_values()
+                for index in range(half_blend_frames):
+                    frame = next(frames)
+                    square = 0
+                    for channel in range(channels):
+                        value = int.from_bytes(frame[sample_width * channel:sample_width * channel + sample_width],
+                                               'little', signed=True)
+                        square += value * value
+                    blend_squares.append(square)
+                    blend += square
+                for index in range(size - half_blend_frames):
+                    frame = next(frames)
+                    square = 0
+                    for channel in range(channels):
+                        value = int.from_bytes(frame[sample_width * channel:sample_width * channel + sample_width],
+                                               'little', signed=True)
+                        square += value * value
+                    blend_squares.append(square)
+                    blend += square
+                    if index < half_blend_frames:
+                        yield blend < square_threshold * channels * (half_blend_frames + index + 1)
+                    else:
+                        result = blend < square_threshold * channels * (blend_frames + 1)
+                        if result:
+                            results += 1
+                        yield result
+                        blend -= blend_squares.popleft()
+                for index in range(half_blend_frames):
+                    blend -= blend_squares.popleft()
+                    yield blend < square_threshold * channels * (blend_frames - index)
+
+            is_silence = get_is_silence(blend)
+
+            def to_regions(iterable):
+                iterator = enumerate(iterable)
+                while True:
+                    try:
+                        index, value = next(iterator)
+                    except StopIteration:
+                        return
+                    if value:
+                        start = index
+                        while True:
+                            try:
+                                index, value = next(iterator)
+                                if not value:
+                                    yield start, index
+                                    break
+                            except StopIteration:
+                                yield start, index + 1
+                                return
+
+            threshold_frames = int(threshold_duration * frame_rate)
+            silence_regions = ((start, end) for start, end in to_regions(is_silence) if end - start >= blend_duration)
+            silence_regions = (
+                (start + (half_blend_frames if start > 0 else 0), end - (half_blend_frames if end < size else 0)) for
+                start, end
+                in silence_regions)
+            silence_regions = [(start, end) for start, end in silence_regions if end - start >= threshold_frames]
+            including_end = len(silence_regions) == 0 or silence_regions[-1][1] == size
+            silence_regions = [(start / frame_rate, end / frame_rate) for start, end in silence_regions]
+
+            if save_silence:
+                with wave.open(save_silence, 'wb') as out_wav:
+                    out_wav.setnchannels(channels)
+                    out_wav.setsampwidth(sample_width)
+                    out_wav.setframerate(frame_rate)
+                    for start, end in silence_regions:
+                        wav.setpos(start)
+                        frames = wav.readframes(end - start)
+                        out_wav.writeframes(frames)
+
+        return silence_regions, including_end
+
+    def extract_audio(input_filename, output_filename):
+        command = ['ffmpeg', '-loglevel', 'panic', '-i', input_filename, '-acodec', 'pcm_s16le', '-f', 'wav',
+                   '-y',
+                   output_filename]
+        subprocess.run(command, stderr=subprocess.PIPE).check_returncode()
+
+    audio_file = tempfile.NamedTemporaryFile(delete=False)
+    audio_file.close()
+
+    extract_audio(path, audio_file.name)
+
+    def transform_duration(duration):
+        return constant + sublinear * math.log(duration + 1) + linear * duration
+
+    silences, including_end = find_silences(audio_file.name)
+
+    total_duration = sum((end - start for start, end in silences))
+
+    if len(silences) == 0:
+        sys.exit(0)
+
+    regions = []
+    if silences[0][0] > 0:
+        regions.append((0, silences[0][0], False))
+    for silence, next_silence in zip(silences[:-1], silences[1:]):
+        regions.append((silence[0], silence[1], True))
+        regions.append((silence[1], next_silence[0], False))
+    if including_end:
+        regions.append((silences[-1][0], None, True))
+    else:
+        regions.append((silences[-1][0], silences[-1][1], True))
+        regions.append((silences[-1][1], None, False))
+
+    def format_offset(offset):
+        return '{}:{}:{}'.format(int(offset) // 3600, int(offset) % 3600 // 60, offset % 60)
+
+    frames = ffprobe.get_frames(path)
+    duration = ffprobe.get_duration(path)
+    if frames:
+        frame_rate = frames / duration  # N.B. Possibly we need to simply read frame rate instead of calculating it.
+    else:
+        frame_rate = ffprobe.get_frame_rate(path)
+        frames = int(frame_rate * duration)
+
+    width, height = ffprobe.get_resolution(path)
+
+    def closest_frames(duration, frame_rate):
+        return int((duration + 1 / frame_rate / 2) // (1 / frame_rate))
+
+    if recalculate_time_in_description:
+        with open(recalculate_time_in_description, encoding='utf-8') as description_file:
+            description = description_file.read()
+        time_codes = {}
+        for time_code, h, m, s in re.findall('((\d+):(\d\d):(\d\d))', description):
+            time_codes[time_code] = int(h) * 3600 + int(m) * 60 + int(s)
+        current_position = 0
+        for start, end, is_silence in regions:
+            start_frame = int(start * frame_rate)
+            end_frame = frames if end is None else int(end * frame_rate)
+            duration = (end_frame - start_frame) / frame_rate
+            if is_silence:
+                new_duration = transform_duration(duration)
+            else:
+                new_duration = duration
+            for time_code, time_value in list(time_codes.items()):
+                if start <= time_value < end:
+                    time_codes[time_code] = int((time_value - start) / duration * new_duration + current_position)
+            current_position += new_duration
+        for time_code, time_value in sorted(time_codes.items(), key=lambda x: x[1], reverse=True):
+            description = description.replace(time_code,
+                                              '{:d}:{:02d}:{:02d}'.format(time_value // 3600, (time_value // 60) % 60,
+                                                                          time_value % 60))
+        description_base_name, description_extension = os.path.splitext(recalculate_time_in_description)
+        with open('{}_result{}'.format(*os.path.splitext(recalculate_time_in_description)), 'w',
+                  encoding='utf-8') as description_file:
+            description_file.write(description)
+
+    command = ['ffmpeg', '-loglevel', 'panic', '-i', path, '-f', 'image2pipe', '-pix_fmt', 'rgb24', '-vcodec',
+               'rawvideo', '-']
+    decoder = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    video_track = tempfile.NamedTemporaryFile(delete=False)
+    video_track.close()
+    command = ['ffmpeg', '-loglevel', 'panic', '-framerate', str(frame_rate), '-s',
+               '{}x{}'.format(width, height), '-f',
+               'rawvideo',
+               '-pix_fmt',
+               'rgb24', '-i', '-']
+    command += ['-f', 'mp4', '-pix_fmt', 'yuv420p', '-y', video_track.name]
+    encoder = subprocess.Popen(command, stdin=subprocess.PIPE)
+
+    audio_track = tempfile.NamedTemporaryFile(delete=False)
+    audio_track.close()
+    wav = wave.open(audio_file.name)
+    out_wav = wave.open(audio_track.name, 'wb')
+    size = wav.getnframes()
+    channels = wav.getnchannels()
+    sample_width = wav.getsampwidth()
+    audio_frame_rate = wav.getframerate()
+    out_wav.setnchannels(channels)
+    out_wav.setsampwidth(sample_width)
+    out_wav.setframerate(audio_frame_rate)
+
+    def compress_audio(wav, start_frame, end_frame, result_frames):
+        if result_frames == 0:
+            return b''
+        elif result_frames == end_frame - start_frame:
+            wav.setpos(start_frame)
+            return wav.readframes(result_frames)
+        else:
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            frame_width = sample_width * channels
+            if result_frames * 2 <= end_frame - start_frame:
+                left_length = result_frames
+                right_length = result_frames
+            else:
+                left_length = (end_frame - start_frame + 1) // 2
+                right_length = end_frame - start_frame - left_length
+            crossfade_length = right_length + left_length - result_frames
+            crossfade_start = (result_frames - crossfade_length) // 2
+            wav.setpos(start_frame)
+            left_frames = wav.readframes(left_length)
+            wav.setpos(end_frame - right_length)
+            right_frames = wav.readframes(right_length)
+            result = bytearray(b'\x00' * result_frames * frame_width)
+            result[:(left_length - crossfade_length) * frame_width] = left_frames[:-crossfade_length * frame_width]
+            result[-(right_length - crossfade_length) * frame_width:] = right_frames[crossfade_length * frame_width:]
+            for i in range(crossfade_length):
+                r = i / (crossfade_length - 1)
+                l = 1 - r
+                for channel in range(channels):
+                    signal_left = int.from_bytes(left_frames[(
+                                                                     left_length - crossfade_length + i) * frame_width + channel * sample_width:(
+                                                                                                                                                        left_length - crossfade_length + i) * frame_width + (
+                                                                                                                                                        channel + 1) * sample_width],
+                                                 'little', signed=True)
+                    signal_right = int.from_bytes(
+                        right_frames[i * frame_width + channel * sample_width:i * frame_width + (
+                                channel + 1) * sample_width], 'little', signed=True)
+                    result[(left_length - crossfade_length + i) * frame_width + channel * sample_width:(
+                                                                                                               left_length - crossfade_length + i) * frame_width + (
+                                                                                                               channel + 1) * sample_width] = int(
+                        signal_left * l + signal_right * r).to_bytes(sample_width, 'little', signed=True)
+            return result
+
+    audio_remainder_frames = 0.0
+    for start, end, is_silence in regions:
+        start_frame = int(start * frame_rate)
+        end_frame = frames if end is None else int(end * frame_rate)
+        audio_start_frame = min(int(start * audio_frame_rate), size)
+        audio_end_frame = size if end is None else min(int(end * audio_frame_rate), size)
+        if is_silence:
+            duration = (end_frame - start_frame) / frame_rate
+            new_duration = transform_duration(duration)
+            new_frames_count = closest_frames(new_duration, frame_rate)
+            new_frames = set()
+            for index in range(new_frames_count):
+                new_frame = start_frame + int((index + 0.5) * (end_frame - start_frame) / new_frames_count)
+                assert not new_frame in new_frames
+                assert new_frame >= start_frame
+                assert new_frame < end_frame
+                new_frames.add(new_frame)
+            audio_delta_frames = audio_remainder_frames + (duration - new_frames_count / frame_rate) * audio_frame_rate
+            audio_remainder_frames = audio_delta_frames - int(audio_delta_frames)
+            if int(audio_delta_frames) > audio_end_frame - audio_start_frame:
+                audio_remainder_frames += audio_delta_frames - (audio_end_frame - audio_start_frame)
+                audio_delta_frames = audio_end_frame - audio_start_frame
+            audio_result_frames = audio_end_frame - audio_start_frame - int(audio_delta_frames)
+        else:
+            new_frames = set(range(start_frame, end_frame))
+            audio_result_frames = audio_end_frame - audio_start_frame
+        for index in range(start_frame, end_frame):
+            frame = decoder.stdout.read(width * height * 3)
+            if index in new_frames:
+                encoder.stdin.write(frame)
+        out_wav.writeframes(compress_audio(wav, audio_start_frame, audio_end_frame, audio_result_frames))
+
+    wav.close()
+    os.unlink(audio_file.name)
+    out_wav.close()
+
+    encoder.stdin.close()
+
+    encoder.wait()
+    assert encoder.returncode == 0
+
+    decoder.terminate()
+
+    extension = os.path.splitext(path)[1]
+    filename = os.path.splitext(os.path.basename(path))[0]
+
+    command = ['ffmpeg', '-loglevel', 'panic', '-f', 'mp4', '-i', video_track.name, '-f', 'wav', '-i',
+               audio_track.name]
+    command += ['-c:v', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-y',
+                '{}{}_result{}'.format(directory_path, filename, extension)]
+    subprocess.run(command)
+
+    os.unlink(audio_track.name)
+    os.unlink(video_track.name)
+
+--- END FILE: auto-gaming-montage-maker/packagefiles/video_remove_silence.py ---
+
+--- START FILE: auto-gaming-montage-maker/packagefiles/edit_video.py ---
+import sys
+import cv2
+import os
+import tempfile
+import numpy as np
+
+from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+from ultralytics import YOLO
+from moviepy.video.fx import all as vfx
+from moviepy.editor import VideoFileClip, ImageClip, ColorClip, AudioFileClip, CompositeAudioClip, \
+    concatenate_audioclips
+from moviepy.video.compositing.concatenate import concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont
+from rich.console import Console
+
+console = Console()
+
+nothing_or_something = 'nothing'
+start = 0
+end = 3.86666
+exception1 = False
+exception2 = False
+read_screen_bool = True
+model_path = ''
+threshold = 0.5
+amount_frames_to_skip = 2
+detections = 0
+detection_already_found = False
+regular_editing = 0
+
+
+def absolute_paths(specifiedpath):
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), specifiedpath)
+
+
+def generate_text_image(text, font_size, font_color, vid_width, vid_height):
+    image = Image.new("RGB", (vid_width, vid_height), color=(0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(font_size)
+    _, _, w, h = draw.textbbox((0, 0), text, font=font)
+    text_position = ((vid_width - w) // 2, (vid_height - h) // 2)
+    draw.text(text_position, text, font=font, fill=font_color)
+    if not os.path.exists(absolute_paths("output_images")):
+        os.makedirs(absolute_paths("output_images"))
+    image.save(absolute_paths(f"output_images/{text}.png"))
+
+
+# Function to create a black screen with text
+def create_intro_text_clip(text, vid_width, vid_height):
+    black_screen = ColorClip(size=(vid_width, vid_height), color=(0, 0, 0), duration=3)
+    generate_text_image(text, 100, (255, 255, 255), vid_width, vid_height)
+    text_clip = ImageClip(absolute_paths(f"output_images/{text}.png"), duration=3)
+    intro_clip = CompositeVideoClip([black_screen, text_clip.set_duration(3)])
+    intro_clip = intro_clip.fadeout(0.6)
+    intro_clip = intro_clip.fadein(0.6)
+    return intro_clip
+
+
+def replace_non_white_with_black(image):
+    # Define the white color range
+    lower_bound = np.array([217, 217, 217])  # 240 remember
+    upper_bound = np.array([255, 255, 255])
+
+    # Create a mask where pixels are within the defined range
+    mask = np.all((image >= lower_bound) & (image <= upper_bound), axis=-1)
+
+    # Replace non-white pixels with black
+    image[~mask] = [0, 0, 0]
+
+    return image
+
+
+def crop_the_frame(height, width, frame, regular_check):
+    rl_width = 5
+    if regular_check == 2:
+        regular_check = 0
+        rl_width = 3
+    start_y = ((height // 2) + int((200 * height) / 1440)) * regular_check
+    end_y = start_y + (height // 4) - (int((100 * height) / 1440)) * regular_check
+    start_x = width // 3
+    end_x = start_x + (width // rl_width)
+    return frame[start_y:end_y, start_x:end_x]
+
+
+def auto_game_montage(*args):
+    global path_to_video, amount_frames_to_skip, detections, start, end, read_screen_bool, model_path, threshold, regular_editing
+    music_volume = args[3] / 100
+    if args[7] == '':  # args[7] is the intro text that the user typed from the GUI (or none)
+        no_intro_text = True
+    else:
+        no_intro_text = False
+        start = 3
+        end = 6.86666
+    if args[6] == 'no':
+        turn_off_effects = True
+    else:
+        turn_off_effects = False
+    detections = 0
+    path_to_video = args[0]
+    output_filename = os.path.splitext(os.path.basename(path_to_video))[0]
+    if ';' in args[0]:
+        video_file_paths = args[0].split(';')
+        video_clips = [VideoFileClip(file_path) for file_path in video_file_paths]
+        concatenated_clip = concatenate_videoclips(video_clips, method="compose")
+        path_to_video = os.path.join(tempfile.gettempdir(), "tempVID_AJKLF176.mp4")
+        print("Program: Combining your clips...")
+        concatenated_clip.write_videofile(path_to_video, logger=None)  # TODO: user should be able to adjust this 1
+        print("Program: Done combining clips.")
+        for clip in video_clips:
+            clip.close()
+    if not os.path.isabs(args[2]):
+        if args[2] == 'none':
+            music_choice = absolute_paths('editing_sfx/none.mp3')
+        else:
+            music_choice = absolute_paths('default_audio/' + args[2])
+    else:
+        music_choice = args[2]
+
+    cap = cv2.VideoCapture(path_to_video)  # TODO: user should be able to adjust this 1
+
+    # Get the video frame width, height, and frames per second (fps), make sure it's the right resolution
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    valid_heights = [480, 720, 1080, 1440, 2160]
+    valid_widths = [640, 1280, 1920, 2560, 3840]
+    if frame_height not in valid_heights or frame_width not in valid_widths:
+        print(f"Your video resolution is {frame_width}x{frame_height}, it needs to be one of these resolutions: "
+              f"640x480, 1280x720, 1920x1080, 2560x1440, 3840x2160")
+        return
+
+    cap.set(cv2.CAP_PROP_POS_MSEC, 3100)  # start at 3 seconds due to hardcoded edits
+    ret, frame = cap.read()
+    track_frames = []
+    clips_list = []
+    audio_clips_list = []
+    which_game = args[4]
+    read_screen_bool = False
+    amount_frames_to_skip = args[5]
+
+    if which_game == "CSGO":
+        model_path = absolute_paths(r"YOLOmodels/csgo.pt")
+    elif which_game == "Valorant":
+        model_path = absolute_paths(r"YOLOmodels/valorant.pt")
+    elif which_game == "Overwatch":
+        threshold = 0.45
+        model_path = absolute_paths(r"YOLOmodels/overwatch.pt")
+    elif which_game == "Minecraft (PVP server)":
+        model_path = absolute_paths(r"YOLOmodels/minecraft.pt")
+    else:
+        amount_frames_to_skip = int((fps * 25) / 60)
+        threshold = 0.6
+        regular_editing = 0
+        if which_game == "Fortnite":
+            threshold = 0.2
+            regular_editing = 1
+        if which_game == "MW 2019" or which_game == "PUBG PC":
+            threshold = 0.7
+        if which_game == "Rocket League":
+            threshold = 0.46
+            regular_editing = 2
+        read_screen_bool = True
+    model = YOLO(model_path)
+    original_clip = VideoFileClip(path_to_video)  # TODO: user should be able to adjust this 1
+    audio_clip = AudioFileClip(music_choice)  # TODO: user should be able to adjust this 1
+    print(
+        "------------------------------------------------------------------------------------------------------------")
+    console.print(
+        "             THIS QUOTE COMES FROM JESUS, READ IT WHILE YOU WAIT FOR THE PROGRAM TO FINISH                    ",
+        style="bold red")
+    print("------------------------------------------------------------------------------------------------------------"
+          "\nDo not let your hearts be troubled. You believe in God; believe also in me. "
+          "\nMy Father’s house has many rooms; if that were not so, would I have told you that "
+          "\nI am going there to prepare a place for you? And if I go and prepare a place for "
+          "\nyou, I will come back and take you to be with me that you also may be where I am. "
+          "\nYou know the way to the place where I am going."
+          "\nThomas said to him, Lord, we don’t know where you are going, so how can we know the way?"
+          "\nJesus answered, I am the way and the truth and the life. No one comes to the Father except through me. "
+          "\nIf you really know me, you will know my Father as well. From now on, you do know him and have seen him."
+          "\nPhilip said, Lord, show us the Father and that will be enough for us."
+          "\nJesus answered: Don’t you know me, Philip, even after I have been among you such a long time? "
+          "\nAnyone who has seen me has seen the Father. How can you say, ‘Show us the Father’? "
+          "\nDon’t you believe that I am in the Father, and that the Father is in me? The words "
+          "\nI say to you I do not speak on my own authority. Rather, it is the Father, living in me, "
+          "\nwho is doing his work. Believe me when I say that I am in the Father and the Father is in me; "
+          "\nor at least believe on the evidence of the works themselves. Very truly I tell you, "
+          "\nwhoever believes in me will do the works I have been doing, and they will do even greater things than these, "
+          "\nbecause I am going to the Father. And I will do whatever you ask in my name, "
+          "\nso that the Father may be glorified in the Son. You may ask me for anything in my name, and I will do it."
+          "\n                                                  - John 14:1-14"
+          "\n-------------------------------------------------------------------------------------------------------------")
+
+    while ret:  # iterating through the video frames and skipping 1 every iteration
+        current_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC)
+        sys.stdout.flush()
+        sys.stdout.write(
+            f'\rModel: I\'m watching {str(current_timestamp / 60000)[:6]} minute(s) in your video | Detections: {detections}  ')
+        global nothing_or_something, exception1, exception2
+        exception1 = False
+        exception2 = False
+        nothing_or_something = 'nothing'
+
+        def read_screen():
+            # Finding the directory for the proper resolution of the template image (480,720,1080,etc folders)
+            templates = []
+            specified_res_dir = absolute_paths(rf"template_matching_resolutions/{str(frame_height)}p")
+            for filename in os.listdir(specified_res_dir):
+                if which_game.replace(" ", "") in filename:
+                    templates.append(cv2.imread(specified_res_dir + rf"/{filename}", cv2.IMREAD_COLOR))
+            global detection_already_found
+            for template in templates:
+                if detection_already_found:
+                    detection_already_found = False
+                    break
+                # Perform template matching
+                if regular_editing == 0 or regular_editing == 2:
+                    edited_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    template = cv2.cvtColor(template, cv2.COLOR_BGRA2BGR)
+                    template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+                    if regular_editing == 2:
+                        edited_frame = crop_the_frame(frame_height, frame_width, edited_frame, regular_editing)
+                else:
+                    edited_frame = crop_the_frame(frame_height, frame_width, frame, regular_editing)
+                    edited_frame = replace_non_white_with_black(edited_frame)
+                res = cv2.matchTemplate(edited_frame, template, cv2.TM_CCOEFF_NORMED)
+                loc = np.where(res >= threshold)
+
+                stop_running = False
+
+                # If anything is detected it will show up in zip(*loc[::-1])
+                for pt in zip(*loc[::-1]):
+                    global nothing_or_something, start, end, exception1, exception2, detections
+                    nothing_or_something = 'something'
+                    for item in track_frames[-3:]:
+                        if item == 'something':
+                            stop_running = True
+                            break
+                    if not stop_running:
+                        win_status = [3000, 1500, 700, 200]
+                        middle1 = start + 1.5
+                        middle2 = start + 2.96666
+                        detections += 1
+                        time_clip1 = (current_timestamp - win_status[1]) / 1000
+                        time_clip2 = (current_timestamp - win_status[2]) / 1000
+                        subclip1 = original_clip.subclip((current_timestamp - win_status[0]) / 1000, time_clip1)
+                        target_clip = original_clip.subclip(time_clip1, time_clip2)
+                        try:
+                            subclip2 = original_clip.subclip(time_clip2, (current_timestamp + win_status[3]) / 1000)
+                        except:
+                            exception1 = True
+                        try:
+                            audio_clips = audio_clip.subclip(start, middle1)
+                            audio_clips2 = audio_clip.subclip(middle1, middle2)
+                            if not turn_off_effects:
+                                audio_clips2 = audio_clips2.volumex(0.7)
+                            audio_clips3 = audio_clip.subclip(middle2, end)
+                        except:
+                            exception2 = True
+                        if not turn_off_effects:
+                            target_clip = target_clip.resize(lambda t: 1 + 0.3 * t)
+                            target_clip = target_clip.fx(vfx.colorx, 1.5)
+                            target_clip = target_clip.speedx(0.6)
+                            target_audio = target_clip.audio
+                            background_sfx = AudioFileClip(absolute_paths("editing_sfx/bass_boosted_fixed.mp3"))
+                            background_sfx = background_sfx.audio_fadeout(0.2)
+                            try:
+                                adjusted_audio_clip = target_audio.volumex(0.5)
+                                combined_audio = CompositeAudioClip([adjusted_audio_clip, background_sfx])
+                                target_clip = target_clip.set_audio(combined_audio)
+                            except:
+                                target_clip = target_clip.set_audio(background_sfx)
+                        if not exception2:
+                            audio_clips_list.append(audio_clips)
+                            audio_clips_list.append(audio_clips2)
+                            audio_clips_list.append(audio_clips3)
+                        clips_list.append(subclip1)
+                        clips_list.append(target_clip)
+                        if not exception1:
+                            clips_list.append(subclip2)
+                        start = start + 3.86666
+                        end = end + 3.86666
+
+                    detection_already_found = True
+                    break
+
+        def watch_screen():
+            results = model(frame)[0]
+            stop_running = False
+
+            for result in results.boxes.data.tolist():
+                x1, y1, x2, y2, score, class_id = result
+                class_name = results.names[int(class_id)].lower()
+                if (score > threshold) and ('kill' in class_name or class_name == '0'):
+                    global nothing_or_something, start, end, exception1, exception2, detections
+                    if which_game == 'Minecraft (PVP server)':
+                        detections += 1
+                        clips_list.append(
+                            original_clip.subclip(current_timestamp / 1000, (current_timestamp + 1000) / 1000))
+                        try:
+                            cap.set(cv2.CAP_PROP_POS_MSEC, current_timestamp + 1000)
+                        except:
+                            pass
+                    else:
+                        nothing_or_something = 'something'
+                        for item in track_frames[-25:]:
+                            if item == 'something':
+                                stop_running = True
+                                break
+                        if not stop_running:
+                            win_status = [2000, 1000, 200, 600]
+                            middle1 = start + 1.5
+                            middle2 = start + 2.96666
+                            if class_name == '':  # round_end
+                                win_status = [3000, 3000, 2000, 200]
+                                middle1 = start + 0
+                                middle2 = start + 2.16666
+                                detections += 1
+                            else:
+                                detections += 1
+                            time_clip1 = (current_timestamp - win_status[1]) / 1000
+                            time_clip2 = (current_timestamp - win_status[2]) / 1000
+                            subclip1 = original_clip.subclip((current_timestamp - win_status[0]) / 1000, time_clip1)
+                            target_clip = original_clip.subclip(time_clip1, time_clip2)
+
+                            try:
+                                subclip2 = original_clip.subclip(time_clip2, (current_timestamp + win_status[3]) / 1000)
+                            except:
+                                exception1 = True
+                            try:
+                                audio_clips = audio_clip.subclip(start, middle1)
+                                audio_clips2 = audio_clip.subclip(middle1, middle2)
+                                if not turn_off_effects:
+                                    audio_clips2 = audio_clips2.volumex(0.7)
+                                audio_clips3 = audio_clip.subclip(middle2, end)
+                            except:
+                                exception2 = True
+                            if not turn_off_effects:
+                                target_clip = target_clip.resize(lambda t: 1 + 0.3 * t)
+                                target_clip = target_clip.fx(vfx.colorx, 1.5)
+                                target_clip = target_clip.speedx(0.6)
+                                target_audio = target_clip.audio
+                                adjusted_audio_clip = target_audio.volumex(0.5)
+                                background_sfx = AudioFileClip(absolute_paths("editing_sfx/bass_boosted_fixed.mp3"))
+                                background_sfx = background_sfx.audio_fadeout(0.2)
+                                combined_audio = CompositeAudioClip([adjusted_audio_clip, background_sfx])
+                                target_clip = target_clip.set_audio(combined_audio)
+                            if not exception2:
+                                audio_clips_list.append(audio_clips)
+                                audio_clips_list.append(audio_clips2)
+                                audio_clips_list.append(audio_clips3)
+                            clips_list.append(subclip1)
+                            clips_list.append(target_clip)
+                            if not exception1:
+                                clips_list.append(subclip2)
+                            start = start + 3.86666
+                            end = end + 3.86666
+                    break
+
+        if read_screen_bool:
+            read_screen()
+        else:
+            watch_screen()
+        track_frames.append(nothing_or_something)
+        for _ in range(1, amount_frames_to_skip):
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    try:
+        final_clip = concatenate_videoclips(clips_list, method="compose")
+        if which_game == 'Minecraft (PVP server)' or turn_off_effects:
+            while audio_clip.duration < final_clip.duration:
+                audio_clip = concatenate_audioclips([audio_clip, audio_clip])
+            if not turn_off_effects:
+                final_clip = final_clip.fadeout(0.4)
+            audio_clip = audio_clip.volumex(music_volume)  # TODO: user should be able to adjust this 1
+            audio_clip = audio_clip.subclip(0, final_clip.duration)
+            combined_audio2 = CompositeAudioClip([final_clip.audio, audio_clip])
+            if not turn_off_effects:
+                combined_audio2 = combined_audio2.audio_fadeout(0.4)
+            final_clip = final_clip.set_audio(combined_audio2)
+        else:
+            concatenated_audio = concatenate_audioclips(audio_clips_list)
+            while concatenated_audio.duration < final_clip.duration:
+                concatenated_audio = concatenate_audioclips([concatenated_audio, concatenated_audio])
+            audio_clip = concatenated_audio.volumex(music_volume)  # TODO: user should be able to adjust this 1
+            audio_clip = audio_clip.subclip(0, final_clip.duration)
+            combined_audio2 = CompositeAudioClip([final_clip.audio, audio_clip])
+            combined_audio2 = combined_audio2.audio_fadeout(0.4)
+            final_clip = final_clip.set_audio(combined_audio2)
+            if not turn_off_effects:
+                final_clip = final_clip.fadeout(0.4)
+        if not no_intro_text and which_game != 'Minecraft (PVP server)':
+            intro_clip = create_intro_text_clip(args[7], frame_width, frame_height)
+            a3 = AudioFileClip(music_choice)
+            if a3.duration >= intro_clip.duration:
+                a3 = a3.subclip(0, intro_clip.duration)
+                a3 = a3.volumex(music_volume)
+            intro_clip = intro_clip.set_audio(a3)
+            final_clip = concatenate_videoclips([intro_clip, final_clip])
+        editing_eta = str((((detections * 16) / 60) * frame_height) / 1080)[:6]
+        if which_game == 'Minecraft (PVP server)':
+            editing_eta = str(((detections / 60) * frame_height) / 1080)[:6]
+        print(f"\nProgram: Editing your video now. ETA: {editing_eta} minute(s)")
+        final_clip.write_videofile(f"{args[1]}/{output_filename}_output.mp4", codec='libx264', audio_codec='aac',
+                                   logger=None)
+        print(f"Program: All done! The edited video can be found here: {args[1]}/{output_filename}_output.mp4")
+    except Exception as e:
+        print(e)
+        print(f"\nModel: No detections found of the game {which_game} in the selected video.")
+
+--- END FILE: auto-gaming-montage-maker/packagefiles/edit_video.py ---

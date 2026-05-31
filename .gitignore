@@ -1,0 +1,19 @@
+# Python virtual environment (do not commit — large binaries exceed GitHub limits)
+phonk_env/
+venv/
+.venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Secrets / local config
+.env
+.env.*
+
+# Model checkpoints (heavy; fetch separately)
+bin/models/
+
+# OS cruft
+.DS_Store
