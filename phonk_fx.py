@@ -28,6 +28,38 @@ import tempfile
 import cv2
 import numpy as np
 
+
+def _ensure_ffmpeg_path() -> bool:
+    """Ensure ffmpeg is on PATH. On Windows, if it's not found, try to reload PATH from the registry."""
+    if shutil.which("ffmpeg") is not None:
+        return True
+    
+    import sys
+    if sys.platform == "win32":
+        try:
+            import winreg
+            # Load user PATH
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
+                user_path, _ = winreg.QueryValueEx(key, 'Path')
+            # Load system PATH
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'System\CurrentControlSet\Control\Session Manager\Environment') as key:
+                sys_path, _ = winreg.QueryValueEx(key, 'Path')
+            
+            # Combine paths and expand variables like %SystemRoot%
+            expanded_paths = []
+            for path_part in (user_path + ";" + sys_path).split(";"):
+                path_part = path_part.strip()
+                if path_part:
+                    expanded = os.path.expandvars(path_part)
+                    expanded_paths.append(expanded)
+            
+            # Update path for this run
+            os.environ["PATH"] = ";".join(expanded_paths)
+            return shutil.which("ffmpeg") is not None
+        except Exception:
+            pass
+    return False
+
 # MoviePy v2.0+ public API (no moviepy.editor; effects live under `vfx`).
 from moviepy import AudioFileClip, concatenate_videoclips, vfx
 
@@ -274,7 +306,7 @@ def apply_phonk_bass_boost(audio_clip, low_gain: int = DEFAULT_LOW_GAIN_DB,
     moviepy AudioFileClip
         A new clip backed by the processed WAV.
     """
-    if shutil.which("ffmpeg") is None:
+    if not _ensure_ffmpeg_path():
         raise RuntimeError("ffmpeg not found on PATH; required for bass boost.")
 
     fd_in, src_path = tempfile.mkstemp(suffix=".wav")
@@ -369,7 +401,7 @@ def apply_beat_synced_bass_boost(audio_clip, beat_times, out_path=None,
     moviepy AudioFileClip
         A new clip backed by the processed WAV.
     """
-    if shutil.which("ffmpeg") is None:
+    if not _ensure_ffmpeg_path():
         raise RuntimeError("ffmpeg not found on PATH; required for bass boost.")
 
     fd_in, src_path = tempfile.mkstemp(suffix=".wav")

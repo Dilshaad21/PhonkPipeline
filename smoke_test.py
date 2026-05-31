@@ -229,6 +229,20 @@ def _last_line(text: str) -> str:
 def main() -> int:
     print(_c("Phonk Pipeline — Smoke Test", "1"))
 
+    # On Windows, try to update PATH from registry so freshly installed FFmpeg is found.
+    import shutil
+    if os.name == "nt" and shutil.which("ffmpeg") is None:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
+                u, _ = winreg.QueryValueEx(key, 'Path')
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'System\CurrentControlSet\Control\Session Manager\Environment') as key:
+                s, _ = winreg.QueryValueEx(key, 'Path')
+            expanded = [os.path.expandvars(p.strip()) for p in (u + ";" + s).split(";") if p.strip()]
+            os.environ["PATH"] = ";".join(expanded)
+        except Exception:
+            pass
+
     results = {
         "Dependency & Environment": check_dependencies(),
         "File Structure": check_files(),
